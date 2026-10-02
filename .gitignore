@@ -1,0 +1,27 @@
+# Python bytecode and local environments
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test, type-checker and coverage output
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local application data
+uploads/
+output/
+
+# Streamlit local configuration and secrets
+.streamlit/secrets.toml
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
