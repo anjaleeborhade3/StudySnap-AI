@@ -1493,6 +1493,43 @@ def generate_pdf_summary(text: str) -> str:
     return "\n".join(f"• {point}" for point in points)
 
 
+def generate_pdf_study_notes(text: str) -> dict[str, list[str]]:
+    """Build concise study-note sections using only text extracted from a PDF."""
+    if not text.strip():
+        return {
+            "Key Points": [],
+            "Important Definitions": [],
+            "Important Concepts": [],
+            "Exam Focus": [],
+        }
+
+    keywords = extract_keywords(text, limit=10)
+    key_points = _important_points(text, keywords)
+    if key_points == ["No complete, meaningful points could be identified."]:
+        key_points = []
+
+    concepts = [
+        keyword for keyword in keywords
+        if re.search(rf"(?<!\w){re.escape(keyword)}(?!\w)", text, re.IGNORECASE)
+    ][:8]
+    exam_focus = []
+    for focus in _pdf_heading_topics(text) + keywords:
+        if (
+            re.search(rf"(?<!\w){re.escape(focus)}(?!\w)", text, re.IGNORECASE)
+            and focus.casefold() not in {item.casefold() for item in exam_focus}
+        ):
+            exam_focus.append(focus)
+        if len(exam_focus) == 5:
+            break
+
+    return {
+        "Key Points": key_points,
+        "Important Definitions": extract_definitions(text),
+        "Important Concepts": concepts,
+        "Exam Focus": exam_focus,
+    }
+
+
 def clear_local_study_data() -> None:
     """Clear saved sessions, generated notes, and app-owned in-memory data."""
     clear_study_history()
@@ -1512,6 +1549,7 @@ def clear_local_study_data() -> None:
         "pdf_summary",
         "pdf_summary_error",
         "pdf_questions",
+        "pdf_study_notes",
         "pdf_error",
         "pdf_page_count",
         "pdf_character_count",
@@ -2450,6 +2488,7 @@ if pdf_file is not None:
             "pdf_summary",
             "pdf_summary_error",
             "pdf_questions",
+            "pdf_study_notes",
             "pdf_error",
             "pdf_page_count",
             "pdf_character_count",
@@ -2528,6 +2567,15 @@ if pdf_file is not None:
                 if st.button("❓ Generate Questions", key="pdf_generate_questions"):
                     with st.spinner("Preparing questions from your PDF..."):
                         st.session_state["pdf_questions"] = generate_pdf_questions(pdf_text)
+            if st.button(
+                "📘 Generate Study Notes",
+                key="pdf_generate_study_notes",
+                use_container_width=True,
+            ):
+                with st.spinner("Preparing study notes from your PDF..."):
+                    st.session_state["pdf_study_notes"] = generate_pdf_study_notes(
+                        pdf_text
+                    )
         if summary_error := st.session_state.get("pdf_summary_error"):
             st.error(summary_error)
         if pdf_summary := st.session_state.get("pdf_summary"):
@@ -2552,6 +2600,19 @@ if pdf_file is not None:
                     "The PDF did not contain enough distinct, complete facts to "
                     "create all five questions without adding unsupported content."
                 )
+        if pdf_study_notes := st.session_state.get("pdf_study_notes"):
+            st.markdown("#### Study Notes")
+            with st.container(border=True):
+                    for section_title, section_items in pdf_study_notes.items():
+                        st.markdown(f"##### {section_title}")
+                        if section_items:
+                            for item in section_items:
+                                st.markdown(f"- {item}")
+                        else:
+                            st.caption(
+                                f"No clear {section_title.lower()} were identified "
+                                "in the extracted PDF text."
+                            )
 
 if uploaded_file is None:
     st.markdown('<div class="section-kicker">A simple study workflow</div>', unsafe_allow_html=True)
