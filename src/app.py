@@ -434,7 +434,7 @@ def _useful_keyword(term: str) -> bool:
     )
 
 
-def detect_topic(text: str, keywords: list[str]) -> str:
+def detect_topic(text: str) -> str:
     """Prefer a supported topic label or an explicit source heading."""
     lowered = text.casefold()
     found_topics = [
@@ -1759,6 +1759,7 @@ def _clear_all_history() -> None:
 
 def render_study_dashboard_and_history() -> None:
     """Render statistics and history only from locally persisted study sessions."""
+    st.markdown('<div id="study-history"></div>', unsafe_allow_html=True)
     st.divider()
     st.markdown('<div class="section-kicker">Your learning progress</div>', unsafe_allow_html=True)
     st.header("📊 Study Dashboard")
@@ -1819,6 +1820,7 @@ def render_study_dashboard_and_history() -> None:
         st.info("No study sessions saved yet. Generate Smart Notes to start your history.")
 
     st.markdown("#### Study History")
+    st.caption("Open, review, or remove study sessions saved locally on this device.")
     if not history:
         st.caption("Saved sessions will appear here after notes are generated.")
         return
@@ -1948,6 +1950,30 @@ st.markdown(
         width: 100%;
         min-height: 2.7rem;
     }
+    .sidebar-nav {
+        display: grid;
+        gap: 0.35rem;
+        margin: 0.25rem 0 1rem;
+    }
+    .sidebar-nav a {
+        display: flex;
+        align-items: center;
+        gap: 0.65rem;
+        padding: 0.62rem 0.75rem;
+        color: #26395c !important;
+        background: rgba(255, 255, 255, 0.72);
+        border: 1px solid transparent;
+        border-radius: 11px;
+        font-size: 0.92rem;
+        font-weight: 650;
+        text-decoration: none !important;
+        transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
+    }
+    .sidebar-nav a:hover {
+        background: #eef1ff;
+        border-color: #dce2fb;
+        transform: translateX(2px);
+    }
     [data-testid="stMarkdownContainer"] p,
     [data-testid="stMarkdownContainer"] li {
         line-height: 1.65;
@@ -2024,6 +2050,71 @@ st.markdown(
         color: #c8ceff;
         font-weight: 700;
         padding: 0 0.1rem;
+    }
+    .feature-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 1rem;
+        margin: 1rem 0 2rem;
+    }
+    .feature-card {
+        display: flex;
+        min-height: 205px;
+        flex-direction: column;
+        align-items: flex-start;
+        padding: 1.25rem;
+        background: linear-gradient(150deg, #ffffff 0%, #f8f9ff 100%);
+        border: 1px solid var(--line);
+        border-top: 3px solid var(--accent);
+        border-radius: 18px;
+        box-shadow: 0 9px 25px rgba(28, 45, 86, 0.06);
+        transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+    }
+    .feature-card:hover {
+        transform: translateY(-3px);
+        border-color: #cbd3f4;
+        box-shadow: 0 15px 32px rgba(33, 51, 105, 0.11);
+    }
+    .feature-icon {
+        display: grid;
+        width: 2.7rem;
+        height: 2.7rem;
+        place-items: center;
+        margin-bottom: 0.8rem;
+        background: #eef1ff;
+        border-radius: 13px;
+        font-size: 1.35rem;
+    }
+    .feature-title {
+        color: #1b2d50;
+        font-size: 1.05rem;
+        font-weight: 750;
+        margin-bottom: 0.4rem;
+    }
+    .feature-description {
+        color: var(--muted);
+        flex: 1;
+        font-size: 0.9rem;
+        line-height: 1.55;
+        margin: 0 0 0.9rem;
+    }
+    .feature-action {
+        color: #4e60cd !important;
+        font-size: 0.88rem;
+        font-weight: 750;
+        text-decoration: none !important;
+    }
+    .feature-action:hover {
+        color: #7653c8 !important;
+        text-decoration: underline !important;
+        text-underline-offset: 3px;
+    }
+    @media (max-width: 1050px) {
+        .feature-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 560px) {
+        .feature-grid { grid-template-columns: minmax(0, 1fr); }
+        .feature-card { min-height: 0; }
     }
     .section-kicker {
         color: #5968c5;
@@ -2324,6 +2415,21 @@ st.markdown(
 st.sidebar.markdown("## 📚 StudySnap AI")
 st.sidebar.caption("Your personal study workspace")
 st.sidebar.divider()
+st.sidebar.markdown("### Navigation")
+st.sidebar.markdown(
+    """
+    <nav class="sidebar-nav" aria-label="StudySnap AI navigation">
+      <a href="#home"><span>🏠</span><span>Home</span></a>
+      <a href="#pdf-study"><span>📄</span><span>PDF Study</span></a>
+      <a href="#ocr-notes"><span>📸</span><span>OCR &amp; Notes</span></a>
+      <a href="#flashcards"><span>🧠</span><span>Flashcards</span></a>
+      <a href="#study-history"><span>📚</span><span>Study History</span></a>
+      <a href="#settings"><span>⚙️</span><span>Settings</span></a>
+    </nav>
+    """,
+    unsafe_allow_html=True,
+)
+st.sidebar.markdown('<div id="settings"></div>', unsafe_allow_html=True)
 st.sidebar.markdown("### ⚙️ Settings")
 dark_mode = st.sidebar.toggle("🌙 Dark Mode", key="dark_mode_enabled")
 st.sidebar.caption("StudySnap AI keeps study processing on this device.")
@@ -2383,14 +2489,26 @@ if dark_mode:
         [data-testid="stMarkdownContainer"], label, p, li {
             color: #e8edf8;
         }
+        .sidebar-nav a {
+            color: #e8edf8 !important;
+            background: rgba(39, 54, 83, 0.8);
+        }
+        .sidebar-nav a:hover {
+            background: #314267;
+            border-color: #50638d;
+        }
         [data-testid="stVerticalBlockBorderWrapper"],
         [data-testid="stMetric"],
-        .info-card, .stat-card {
+        .info-card, .stat-card, .feature-card {
             background: #1b2639;
             border-color: #35435b;
         }
         .info-card .card-title, .footer strong { color: #e8edf8; }
         .info-card .card-copy, .helper-line, .footer { color: #b3bfd2; }
+        .feature-title { color: #e8edf8; }
+        .feature-description { color: #b3bfd2; }
+        .feature-icon { background: #273653; }
+        .feature-action { color: #aebaff !important; }
         [data-testid="stTextArea"] textarea,
         [data-testid="stTextInput"] input,
         [data-testid="stSelectbox"] [data-baseweb="select"] > div {
@@ -2427,9 +2545,10 @@ if dark_mode:
 
 st.markdown(
     """
+    <div id="home"></div>
     <div class="hero">
-      <h1>📚 StudySnap AI</h1>
-      <p class="hero-subtitle">Turn Your Notes Into Smart Exam Revision</p>
+      <h1>StudySnap AI</h1>
+      <p class="hero-subtitle">AI-Powered Smart Study Assistant</p>
       <p class="hero-description">Upload your lecture notes or screenshots and instantly transform them into organized notes, important points and exam-focused questions.</p>
       <div class="workflow-grid">
         <span class="workflow-step">📸 Upload</span><span class="workflow-arrow">→</span>
@@ -2442,13 +2561,65 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+st.markdown('<div class="section-kicker">Your study workspace</div>', unsafe_allow_html=True)
+st.subheader("Home Dashboard")
+st.caption("Choose a study tool below or use the sidebar to jump to any section.")
+feature_cards = [
+    (
+        "📄",
+        "PDF Summary",
+        "Turn a text-based PDF into a concise set of source-grounded revision points.",
+        "#pdf-upload",
+        "Go to PDF upload",
+    ),
+    (
+        "❓",
+        "Question Generator",
+        "Create short-answer, descriptive, and multiple-choice questions from your PDF.",
+        "#pdf-upload",
+        "Generate PDF questions",
+    ),
+    (
+        "📝",
+        "Smart Study Notes",
+        "Extract and organize key points from your lecture-note screenshot.",
+        "#notes-upload",
+        "Create study notes",
+    ),
+    (
+        "🧠",
+        "Flashcards",
+        "Review source-backed concepts with reveal-answer and next/previous cards.",
+        "#notes-upload",
+        "Start flashcard workflow",
+    ),
+]
+feature_cards_html = "".join(
+    f'<article class="feature-card">'
+    f'<div class="feature-icon" aria-hidden="true">{icon}</div>'
+    f'<div class="feature-title">{title}</div>'
+    f'<p class="feature-description">{description}</p>'
+    f'<a class="feature-action" href="{anchor}">{action} →</a>'
+    f'</article>'
+    for icon, title, description, anchor, action in feature_cards
+)
+st.markdown(
+    f'<div class="feature-grid">{feature_cards_html}</div>',
+    unsafe_allow_html=True,
+)
+
 st.markdown('<div class="section-kicker">Get started</div>', unsafe_allow_html=True)
 st.subheader("📸 Upload Your Notes")
+st.caption(
+    "Upload a screenshot to extract text, create Smart Notes, and practice with "
+    "Exam Mode and flashcards."
+)
 st.markdown(
     '<div class="upload-subtitle">Drop your lecture screenshot here and let StudySnap AI do the rest.</div>'
     '<div class="format-chip">JPG &nbsp;•&nbsp; JPEG &nbsp;•&nbsp; PNG &nbsp;•&nbsp; WEBP</div>',
     unsafe_allow_html=True,
 )
+st.markdown('<div id="ocr-notes"></div><div id="notes-upload"></div>', unsafe_allow_html=True)
 with st.container(border=True, key="upload-panel"):
     uploaded_file = st.file_uploader(
         "Choose a notes screenshot",
@@ -2466,6 +2637,7 @@ st.divider()
 st.markdown('<div class="section-kicker">Additional study material</div>', unsafe_allow_html=True)
 st.subheader("📄 Upload PDF Study Material")
 st.caption("Add a text-based PDF and create a focused summary or study questions on this device.")
+st.markdown('<div id="pdf-study"></div><div id="pdf-upload"></div>', unsafe_allow_html=True)
 with st.container(border=True, key="pdf-upload-panel"):
     st.markdown(
         '<div class="upload-subtitle">Choose lecture notes, a chapter, or another course handout.</div>'
@@ -2615,6 +2787,11 @@ if pdf_file is not None:
                             )
 
 if uploaded_file is None:
+    st.markdown('<div id="flashcards"></div>', unsafe_allow_html=True)
+    st.caption(
+        "Flashcards become available after you upload a screenshot and generate "
+        "Smart Notes."
+    )
     st.markdown('<div class="section-kicker">A simple study workflow</div>', unsafe_allow_html=True)
     st.subheader("What you can do")
     how_columns = st.columns(4)
@@ -2771,7 +2948,7 @@ if st.session_state.get("ocr_ready"):
         subject = detect_subject(cleaned_text)
         chapter = detect_chapter(cleaned_text)
         title = detect_title(cleaned_text)
-        topic = detect_topic(cleaned_text, keywords) or subject or "Study Notes"
+        topic = detect_topic(cleaned_text) or subject or "Study Notes"
         questions = make_important_questions(cleaned_text)
         short_questions = make_short_answer_questions(keywords, topic)
         mcqs = make_mcqs(cleaned_text, keywords)
@@ -2840,6 +3017,10 @@ if (
     or analysis.get("source_text")
     != st.session_state.get("ocr_cleaned_text", "").strip()
 ):
+    st.markdown('<div id="flashcards"></div>', unsafe_allow_html=True)
+    st.info(
+        "To use Flashcards, analyze a screenshot and generate Smart Notes first."
+    )
     render_study_dashboard_and_history()
     st.stop()
 
@@ -2976,7 +3157,9 @@ st.markdown("**Important questions**")
 for number, question in enumerate(analysis["questions"][:3], 1):
     st.markdown(f"{number}. {question}")
 
+st.markdown('<div id="flashcards"></div>', unsafe_allow_html=True)
 st.markdown("### 🗂️ Flashcard Mode")
+st.caption("Review concepts from your notes; reveal the answer, then move between cards.")
 flashcards = analysis["flashcards"]
 if flashcards:
     flashcard_index_key = f"flashcard_index_{analysis['history_id']}"
