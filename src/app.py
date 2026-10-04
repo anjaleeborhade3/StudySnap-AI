@@ -1209,12 +1209,288 @@ def clear_study_history() -> None:
     save_study_history([])
 
 
-def extract_pdf_text(pdf_bytes: bytes) -> str:
-    """Extract selectable text from an uploaded PDF locally."""
+def extract_pdf_text(pdf_bytes: bytes) -> tuple[str, int]:
+    """Extract selectable text from every PDF page locally."""
     reader = PdfReader(BytesIO(pdf_bytes))
     if reader.is_encrypted and not reader.decrypt(""):
         raise ValueError("This PDF is password-protected.")
-    return "\n".join(page.extract_text() or "" for page in reader.pages).strip()
+    page_text = [page.extract_text() or "" for page in reader.pages]
+    return "\n".join(page_text).strip(), len(page_text)
+
+
+def _pdf_heading_topics(text: str) -> list[str]:
+    """Extract concise section headings without treating prose as a topic."""
+    topics = []
+    seen = set()
+    for line in text.splitlines():
+        heading = re.sub(r"^\s*[-*•#\d.)]+\s*", "", line).strip(" \t:–—-")
+        key = re.sub(r"\s+", " ", heading).casefold()
+        if (
+            not heading
+            or key in seen
+            or len(heading.split()) > 10
+            or len(heading) > 90
+            or re.search(r"[.!?]$", heading)
+        ):
+            continue
+        is_requirement_id = re.match(r"(?i)^FR\s*\d+\s*[-:–—]\s*\w+", heading)
+        is_named_heading = (
+            re.match(r"(?i)^(?:chapter|unit|section|requirement)\b", heading)
+            or re.match(r"(?i)^[A-Z][A-Za-z0-9/&(), –—-]{2,70}$", heading)
+            and (
+                heading.istitle()
+                or heading.isupper()
+                or len(heading.split()) <= 5
+            )
+        )
+        if is_requirement_id or is_named_heading:
+            topics.append(heading)
+            seen.add(key)
+    return topics
+
+
+def generate_pdf_summary_points(text: str, limit: int = 8) -> list[str]:
+    """Select up to eight distinct, source-grounded statements for PDF revision."""
+    sentences = [
+        sentence for sentence in _source_sentences(text)
+        if len(sentence.split()) >= 6
+        and re.search(
+            r"\b(?:is|are|was|were|has|have|had|can|could|will|would|should|"
+            r"must|shall|means?|provid\w*|allow\w*|enabl\w*|support\w*|"
+            r"improv\w*|us\w*|stor\w*|contain\w*|includ\w*|requir\w*|"
+            r"help\w*|describ\w*|defin\w*|perform\w*|display\w*|search\w*|"
+            r"match\w*|represent\w*|relat\w*|interact\w*|design\w*|create\w*|"
+            r"manag\w*|gather\w*|facilitat\w*)\b",
+            sentence,
+            re.IGNORECASE,
+        )
+    ]
+    if not sentences:
+        return []
+    keywords = extract_keywords(text, limit=16)
+    headings = _pdf_heading_topics(text)
+    ranked = sorted(
+        enumerate(sentences),
+        key=lambda item: (
+            -sum(
+                keyword.casefold() in item[1].casefold()
+                for keyword in keywords
+            ),
+            -sum(
+                word.casefold() in item[1].casefold()
+                for heading in headings
+                for word in heading.split()
+                if len(word) > 3
+            ),
+            -int(bool(re.search(
+                r"\b(?:important|purpose|benefit|advantage|process|"
+                r"relationship|requirement|result|therefore|because)\b",
+                item[1],
+                re.IGNORECASE,
+            ))),
+            abs(len(item[1].split()) - 20),
+            item[0],
+        ),
+    )
+    selected = sorted(ranked[:max(5, min(limit, 8))], key=lambda item: item[0])
+    return [sentence for _, sentence in selected]
+
+
+def _pdf_question_facts(text: str) -> list[tuple[str, str]]:
+    """Pair complete factual PDF statements with their nearest section heading."""
+    headings = {
+        re.sub(r"\s+", " ", heading).casefold(): heading
+        for heading in _pdf_heading_topics(text)
+    }
+    heading_lookup = set(headings)
+    current_heading = ""
+    facts = []
+    seen = set()
+    for line in text.splitlines():
+        candidate = re.sub(r"^\s*[-*•#\d.)]+\s*", "", line).strip(" \t:–—-")
+        heading_key = re.sub(r"\s+", " ", candidate).casefold()
+        if heading_key in heading_lookup:
+            current_heading = headings[heading_key]
+            continue
+        for sentence in split_sentences(line):
+            sentence = sentence.strip(" \t-•")
+            key = sentence.casefold()
+            if (
+                len(sentence.split()) < 6
+                or len(sentence.split()) > 40
+                or key in seen
+                or not re.search(
+                    r"\b(?:is|are|was|were|has|have|had|can|could|will|would|"
+                    r"should|must|shall|means?|provid\w*|allow\w*|enabl\w*|"
+                    r"support\w*|improv\w*|us\w*|stor\w*|contain\w*|includ\w*|"
+                    r"requir\w*|help\w*|describ\w*|defin\w*|perform\w*|"
+                    r"display\w*|search\w*|match\w*|represent\w*|relat\w*|"
+                    r"interact\w*|design\w*|creat\w*|manag\w*|gather\w*)\b",
+                    sentence,
+                    re.IGNORECASE,
+                )
+            ):
+                continue
+            facts.append((current_heading, sentence))
+            seen.add(key)
+    return facts
+
+
+def generate_pdf_questions(
+    text: str,
+) -> list[tuple[str, str, list[str], str]]:
+    """Build two short answers, two descriptive questions, and one grounded MCQ."""
+    facts = _pdf_question_facts(text)
+    if not facts:
+        return []
+
+    questions: list[tuple[str, str, list[str], str]] = []
+    used_prompts = set()
+    source_statements = [fact for _, fact in facts]
+
+    def add(kind: str, prompt: str) -> None:
+        normalized = prompt.casefold()
+        if normalized not in used_prompts:
+            questions.append((kind, prompt, [], ""))
+            used_prompts.add(normalized)
+
+    topics = []
+    for heading, fact in facts:
+        topic = heading or next(
+            (
+                keyword for keyword in extract_keywords(fact, limit=8)
+                if keyword.casefold() not in {"study notes", "programming"}
+            ),
+            "",
+        )
+        if topic and topic.casefold() not in {item.casefold() for item in topics}:
+            topics.append(topic)
+
+    for keyword in extract_keywords(text, limit=16):
+        if (
+            any(
+                keyword.casefold() in fact.casefold()
+                for fact in source_statements
+            )
+            and keyword.casefold() not in {item.casefold() for item in topics}
+        ):
+            topics.append(keyword)
+
+    if not topics:
+        topics = extract_keywords(text, limit=8)
+
+    for topic in topics:
+        if len([item for item in questions if item[0] == "Short Answer"]) == 2:
+            break
+        if re.search(r"\bscalability\b", topic, re.IGNORECASE):
+            prompt = "What does the PDF state about the scalability requirement?"
+        elif re.search(r"\bFR\s*\d+\s*[-:–—]", topic, re.IGNORECASE):
+            prompt = f"What does {topic} require the system to do?"
+        else:
+            prompt = f"What does the PDF state about {topic}?"
+        add("Short Answer", prompt)
+
+    descriptive_prompts = []
+    lowered = text.casefold()
+    if (
+        re.search(r"\busers?\b", lowered)
+        and re.search(r"\bitem reports?\b", lowered)
+        and re.search(r"\b(?:relationship|associated|linked|connect)\b", lowered)
+    ):
+        descriptive_prompts.append(
+            "How does the PDF describe the relationship between users and item reports?"
+        )
+    if (
+        re.search(r"\bitem reports?\b", lowered)
+        and re.search(r"\bsearch(?:ing)?\b", lowered)
+        and re.search(r"\b(?:improv\w*|help\w*|support\w*|facilitat\w*)\b", lowered)
+    ):
+        descriptive_prompts.append(
+            "How do item reports improve searching, according to the PDF?"
+        )
+    if (
+        re.search(r"\brequirements?\b", lowered)
+        and re.search(r"\b(?:gathered|collected|elicited)\b", lowered)
+        and re.search(r"\bdatabase\b", lowered)
+        and re.search(r"\bUML\b", text, re.IGNORECASE)
+    ):
+        descriptive_prompts.append(
+            "How do the gathered requirements support database and UML design?"
+        )
+    for prompt in descriptive_prompts:
+        if len([item for item in questions if item[0] == "Descriptive"]) == 2:
+            break
+        add("Descriptive", prompt)
+
+    for topic in topics:
+        if len([item for item in questions if item[0] == "Descriptive"]) == 2:
+            break
+        add(
+            "Descriptive",
+            f"What key information does the PDF present about {topic}?",
+        )
+
+    short_facts = source_statements
+    if len(short_facts) >= 4:
+        mcq_topic = next(
+            (
+                topic for topic in topics
+                if any(
+                    topic.casefold() in fact.casefold()
+                    for fact in short_facts
+                )
+            ),
+            "",
+        )
+        correct_fact = next(
+            (
+                fact for fact in short_facts
+                if mcq_topic and mcq_topic.casefold() in fact.casefold()
+            ),
+            short_facts[0],
+        )
+        if mcq_topic:
+            prompt = (
+                f"Which statement specifically describes {mcq_topic} "
+                "according to the PDF?"
+            )
+        else:
+            mcq_topic = next(
+                (
+                    keyword for keyword in extract_keywords(text, limit=12)
+                    if keyword.casefold() in short_facts[0].casefold()
+                ),
+                "the main topic",
+            )
+            correct_fact = short_facts[0]
+            prompt = (
+                f"Which statement in the PDF describes {mcq_topic}?"
+            )
+        distractors = [
+            fact for fact in short_facts
+            if fact != correct_fact
+            and mcq_topic.casefold() not in fact.casefold()
+        ]
+        if len(distractors) < 3:
+            distractors = [
+                fact for fact in short_facts
+                if fact != correct_fact
+            ]
+        options = [correct_fact, *distractors[:3]]
+        if len(options) == 4 and len(set(options)) == 4:
+            questions.append(("MCQ", prompt, options, "A"))
+
+    return questions[:5]
+
+
+def generate_pdf_summary(text: str) -> str:
+    """Generate a local extractive summary from PDF text."""
+    if not text.strip():
+        raise ValueError("This PDF does not contain readable text to summarize.")
+    points = generate_pdf_summary_points(text)
+    if not points:
+        return "No complete, meaningful summary points could be identified."
+    return "\n".join(f"• {point}" for point in points)
 
 
 def clear_local_study_data() -> None:
@@ -1234,8 +1510,11 @@ def clear_local_study_data() -> None:
         "pdf_fingerprint",
         "pdf_text",
         "pdf_summary",
+        "pdf_summary_error",
         "pdf_questions",
         "pdf_error",
+        "pdf_page_count",
+        "pdf_character_count",
         "history_open_id",
         "history_select_id",
         "history_message",
@@ -2162,7 +2441,6 @@ with st.container(border=True, key="pdf-upload-panel"):
         key=f"pdf_study_upload_{st.session_state.get('upload_reset_version', 0)}",
     )
 if pdf_file is not None:
-    st.success(f"PDF uploaded successfully: {pdf_file.name}")
     pdf_bytes = pdf_file.getvalue()
     pdf_fingerprint = sha256(pdf_bytes).hexdigest()
     if st.session_state.get("pdf_fingerprint") != pdf_fingerprint:
@@ -2170,16 +2448,17 @@ if pdf_file is not None:
         for key in (
             "pdf_text",
             "pdf_summary",
+            "pdf_summary_error",
             "pdf_questions",
             "pdf_error",
             "pdf_page_count",
+            "pdf_character_count",
         ):
             st.session_state.pop(key, None)
         with st.status("Reading PDF text locally...", expanded=False) as pdf_status:
             try:
-                pdf_reader = PdfReader(BytesIO(pdf_bytes))
-                st.session_state["pdf_page_count"] = len(pdf_reader.pages)
-                pdf_text = extract_pdf_text(pdf_bytes)
+                pdf_text, page_count = extract_pdf_text(pdf_bytes)
+                st.session_state["pdf_page_count"] = page_count
                 if not pdf_text:
                     st.session_state["pdf_error"] = (
                         "No selectable text was found. Scanned image-only PDFs are not supported."
@@ -2190,6 +2469,7 @@ if pdf_file is not None:
                     )
                 else:
                     st.session_state["pdf_text"] = pdf_text
+                    st.session_state["pdf_character_count"] = len(pdf_text)
                     pdf_status.update(
                         label="PDF ready for study.",
                         state="complete",
@@ -2218,25 +2498,60 @@ if pdf_file is not None:
     if pdf_error := st.session_state.get("pdf_error"):
         st.warning(pdf_error)
     elif pdf_text := st.session_state.get("pdf_text"):
+        st.success(
+            f"PDF ready: {pdf_file.name} · "
+            f"{st.session_state['pdf_page_count']} pages · "
+            f"{st.session_state['pdf_character_count']} characters extracted."
+        )
         with st.container(border=True, key="pdf-action-card"):
             st.markdown("**What would you like to do with this PDF?**")
             summary_column, questions_column = st.columns(2)
             with summary_column:
                 if st.button("📝 Generate Summary", key="pdf_generate_summary"):
-                    with st.spinner("Preparing your summary..."):
-                        st.session_state["pdf_summary"] = summarize(pdf_text)
+                    st.session_state.pop("pdf_summary_error", None)
+                    with st.status("Preparing a local summary...", expanded=False) as summary_status:
+                        try:
+                            summary = generate_pdf_summary(pdf_text)
+                            st.session_state["pdf_summary"] = summary
+                            summary_status.update(
+                                label="Local summary ready.",
+                                state="complete",
+                            )
+                        except ValueError as error:
+                            st.session_state["pdf_summary_error"] = str(error)
+                            st.session_state.pop("pdf_summary", None)
+                            summary_status.update(
+                                label="Summary could not be generated.",
+                                state="error",
+                            )
             with questions_column:
                 if st.button("❓ Generate Questions", key="pdf_generate_questions"):
                     with st.spinner("Preparing questions from your PDF..."):
-                        st.session_state["pdf_questions"] = make_important_questions(pdf_text)
+                        st.session_state["pdf_questions"] = generate_pdf_questions(pdf_text)
+        if summary_error := st.session_state.get("pdf_summary_error"):
+            st.error(summary_error)
         if pdf_summary := st.session_state.get("pdf_summary"):
             st.markdown("#### PDF Summary")
             with st.container(border=True):
                 st.write(pdf_summary)
         if pdf_questions := st.session_state.get("pdf_questions"):
             st.markdown("#### Questions from PDF")
-            for number, question in enumerate(pdf_questions, 1):
-                st.markdown(f"{number}. {question}")
+            for number, (question_type, prompt, options, answer) in enumerate(
+                pdf_questions,
+                1,
+            ):
+                st.markdown(f"**{number}. {question_type}:** {prompt}")
+                if question_type == "MCQ":
+                    for option_number, option in enumerate(options):
+                        option_label = chr(ord("A") + option_number)
+                        st.markdown(f"- **{option_label}.** {option}")
+                    correct_option = options[ord(answer) - ord("A")]
+                    st.markdown(f"**Correct answer: {answer}.** {correct_option}")
+            if len(pdf_questions) < 5:
+                st.info(
+                    "The PDF did not contain enough distinct, complete facts to "
+                    "create all five questions without adding unsupported content."
+                )
 
 if uploaded_file is None:
     st.markdown('<div class="section-kicker">A simple study workflow</div>', unsafe_allow_html=True)
