@@ -1904,6 +1904,9 @@ def _history_session_label(session: dict[str, object]) -> str:
 def _delete_selected_history(session_id: str) -> None:
     try:
         delete_study_session(session_id)
+        analysis = st.session_state.get("analysis")
+        if isinstance(analysis, dict) and analysis.get("history_id") == session_id:
+            analysis["history_saved"] = False
         st.session_state["history_message"] = "Study session deleted."
         st.session_state["history_open_id"] = ""
         remaining = load_study_history()
@@ -3206,9 +3209,11 @@ if st.session_state.get("ocr_ready"):
                     "flashcards": flashcards,
                 }
             )
+            st.session_state["analysis"]["history_saved"] = True
             st.session_state.pop("history_error", None)
             st.session_state["history_message"] = "This study session was saved locally."
         except (OSError, ValueError, json.JSONDecodeError) as error:
+            st.session_state["analysis"]["history_saved"] = False
             st.session_state["history_error"] = (
                 f"Notes were generated, but the study session could not be saved: {error}"
             )
@@ -3272,17 +3277,18 @@ with st.container(border=True):
             placeholder="Enter chapter if needed",
             key=f"smart_chapter_{image_fingerprint}",
         )
-    try:
-        update_study_session_metadata(
-            analysis["history_id"],
-            title_value,
-            subject_value,
-            chapter_value,
-        )
-    except (OSError, ValueError, json.JSONDecodeError) as error:
-        st.session_state["history_error"] = (
-            f"Could not update saved study details: {error}"
-        )
+    if analysis.get("history_saved", True):
+        try:
+            update_study_session_metadata(
+                analysis["history_id"],
+                title_value,
+                subject_value,
+                chapter_value,
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            st.session_state["history_error"] = (
+                f"Could not update saved study details: {error}"
+            )
     st.markdown("#### Topic")
     st.metric("Detected Topic", analysis["topic"])
     setting_columns = st.columns(2, gap="large")
