@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+import tomllib
 import unicodedata
 from collections import Counter
 from datetime import datetime
@@ -17,6 +19,7 @@ from PIL import Image, ImageEnhance, ImageFilter, ImageOps, UnidentifiedImageErr
 from pypdf import PdfReader
 from pypdf.errors import PyPdfError
 from sklearn.feature_extraction.text import TfidfVectorizer
+from streamlit.errors import StreamlitAuthError, StreamlitMissingAuthlibError
 
 try:
     import pytesseract
@@ -25,9 +28,10 @@ except ImportError:
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-OUTPUT_DIRECTORY = PROJECT_ROOT / "output"
-HISTORY_FILE = OUTPUT_DIRECTORY / "study_history.json"
+OUTPUT_ROOT = PROJECT_ROOT / "output" / "users"
+AUTH_CONFIG_PATH = PROJECT_ROOT / ".streamlit" / "secrets.toml"
 SUPPORTED_IMAGE_TYPES = ["jpg", "jpeg", "png", "webp"]
+LOGGER = logging.getLogger(__name__)
 GENERIC_TERMS = {
     "write", "using", "create", "program", "practice", "list", "make",
     "example", "examples", "following", "given", "show", "used", "use",
@@ -1141,9 +1145,10 @@ def build_notes_text(
 
 def load_study_history() -> list[dict[str, object]]:
     """Load locally saved study sessions, raising clear errors for invalid data."""
-    if not HISTORY_FILE.exists():
+    history_path = _history_file_path()
+    if not history_path.exists():
         return []
-    with HISTORY_FILE.open(encoding="utf-8") as history_file:
+    with history_path.open(encoding="utf-8") as history_file:
         history = json.load(history_file)
     if not isinstance(history, list) or any(not isinstance(item, dict) for item in history):
         raise ValueError("Study history has an invalid format.")
@@ -1152,13 +1157,15 @@ def load_study_history() -> list[dict[str, object]]:
 
 def save_study_history(history: list[dict[str, object]]) -> None:
     """Atomically write local study history as UTF-8 JSON."""
-    OUTPUT_DIRECTORY.mkdir(parents=True, exist_ok=True)
-    temporary_file = HISTORY_FILE.with_suffix(".json.tmp")
+    output_directory = _user_output_directory()
+    history_path = _history_file_path()
+    output_directory.mkdir(parents=True, exist_ok=True)
+    temporary_file = history_path.with_suffix(".json.tmp")
     temporary_file.write_text(
         json.dumps(history, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    temporary_file.replace(HISTORY_FILE)
+    temporary_file.replace(history_path)
 
 
 def save_study_session(session: dict[str, object]) -> None:
@@ -1533,7 +1540,7 @@ def generate_pdf_study_notes(text: str) -> dict[str, list[str]]:
 def clear_local_study_data() -> None:
     """Clear saved sessions, generated notes, and app-owned in-memory data."""
     clear_study_history()
-    saved_notes = OUTPUT_DIRECTORY / "studysnap_notes.txt"
+    saved_notes = _user_output_directory() / "studysnap_notes.txt"
     if saved_notes.exists():
         saved_notes.unlink()
     for key in (
@@ -1562,6 +1569,164 @@ def clear_local_study_data() -> None:
         st.session_state.pop(key, None)
     st.session_state["upload_reset_version"] = (
         st.session_state.get("upload_reset_version", 0) + 1
+    )
+
+
+def _auth_configuration_status() -> tuple[bool, str]:
+    """Validate native Streamlit OIDC setup without displaying credential values."""
+    if not AUTH_CONFIG_PATH.is_file():
+        return False, "The Google sign-in configuration file is missing."
+    try:
+        configuration = tomllib.loads(AUTH_CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return False, "The Google sign-in configuration file could not be read."
+
+    auth = configuration.get("auth")
+    required = (
+        "redirect_uri",
+        "cookie_secret",
+        "client_id",
+        "client_secret",
+        "server_metadata_url",
+    )
+    if not isinstance(auth, dict) or any(
+        not isinstance(auth.get(key), str) or not auth[key].strip()
+        for key in required
+    ):
+        return False, "The Google sign-in configuration is incomplete."
+    if any(
+        "replace" in auth[key].casefold()
+        or "your_" in auth[key].casefold()
+        or auth[key].strip().startswith("<")
+        for key in required
+    ):
+        return False, "Replace the example values with your Google OIDC credentials."
+    return True, ""
+
+
+def _redact_oidc_error_message(message: str) -> str:
+    """Remove local credentials and OAuth tokens before logging auth errors."""
+    try:
+        auth = tomllib.loads(AUTH_CONFIG_PATH.read_text(encoding="utf-8")).get(
+            "auth", {}
+        )
+    except (OSError, tomllib.TOMLDecodeError):
+        auth = {}
+
+    if isinstance(auth, dict):
+        for key in ("client_id", "client_secret", "cookie_secret"):
+            value = auth.get(key)
+            if isinstance(value, str) and value:
+                message = message.replace(value, "[REDACTED]")
+
+    return re.sub(
+        r"(?i)(\b(?:client_id|client_secret|cookie_secret|id_token|access_token|"
+        r"refresh_token|authorization_code|code|state)\s*[=:]\s*)"
+        r"([^&\s,;\"']+)",
+        r"\1[REDACTED]",
+        message,
+    )
+
+
+def _user_output_directory() -> Path:
+    """Return this authenticated account's private local data directory."""
+    configured_path = st.session_state.get("_user_output_directory")
+    if not isinstance(configured_path, str) or not configured_path:
+        raise RuntimeError("The authenticated account storage is not initialized.")
+    return Path(configured_path)
+
+
+def _history_file_path() -> Path:
+    return _user_output_directory() / "study_history.json"
+
+
+def _render_login_screen(auth_message: str, can_login: bool) -> None:
+    """Show a standalone Google OIDC login screen without protected app content."""
+    st.markdown(
+        """
+        <style>
+        .login-shell {
+            max-width: 680px;
+            margin: 8vh auto 0;
+            padding: clamp(1.6rem, 5vw, 3.2rem);
+            text-align: center;
+            background: linear-gradient(145deg, #ffffff 0%, #f4f6ff 100%);
+            border: 1px solid #e2e8f3;
+            border-radius: 26px;
+            box-shadow: 0 22px 60px rgba(28, 45, 86, 0.12);
+        }
+        .login-logo {
+            display: grid;
+            width: 4rem;
+            height: 4rem;
+            place-items: center;
+            margin: 0 auto 1rem;
+            color: white;
+            background: linear-gradient(135deg, #4258c8, #7955c8);
+            border-radius: 19px;
+            font-size: 2rem;
+            box-shadow: 0 10px 24px rgba(75, 85, 190, 0.24);
+        }
+        .login-shell h1 { margin-bottom: 0.35rem; }
+        .login-subtitle {
+            color: #5968c5;
+            font-size: 1.12rem;
+            font-weight: 700;
+            margin-bottom: 1.1rem;
+        }
+        .login-copy {
+            max-width: 500px;
+            margin: 0 auto 1.35rem;
+            color: #66758d;
+            line-height: 1.65;
+        }
+        @media (max-width: 600px) {
+            .login-shell { margin-top: 3vh; border-radius: 20px; }
+        }
+        </style>
+        <main class="login-shell">
+          <div class="login-logo" aria-hidden="true">📚</div>
+          <h1>StudySnap AI</h1>
+          <div class="login-subtitle">AI-Powered Smart Study Assistant</div>
+          <p class="login-copy">
+            Sign in with Google to access your private study workspace.
+            Your notes and study history are kept separate for your account.
+          </p>
+        </main>
+        """,
+        unsafe_allow_html=True,
+    )
+    login_columns = st.columns([1, 1.25, 1])
+    center = login_columns[1]
+    with center:
+        if st.button(
+            "Continue with Google",
+            key="google_login_button",
+            type="primary",
+            use_container_width=True,
+            disabled=not can_login,
+        ):
+            try:
+                st.login()
+            except (StreamlitAuthError, StreamlitMissingAuthlibError) as error:
+                LOGGER.error(
+                    "Google OIDC login failed (type=%s): %s",
+                    type(error).__name__,
+                    _redact_oidc_error_message(str(error)),
+                )
+                st.error(
+                    "Google sign-in could not start. Verify the local OIDC "
+                    "configuration and try again."
+                )
+    if not can_login:
+        st.warning(
+            f"{auth_message} Copy `.streamlit/secrets.example.toml` to "
+            "`.streamlit/secrets.toml` and fill it with credentials from your "
+            "Google Cloud OAuth client."
+        )
+    st.caption(
+        "Privacy: authentication is handled by Google using OpenID Connect. "
+        "StudySnap AI does not store your Google password."
     )
 
 
@@ -1894,6 +2059,34 @@ st.set_page_config(
     page_icon="📚",
     layout="wide",
 )
+
+auth_configured, auth_message = _auth_configuration_status()
+if not auth_configured:
+    _render_login_screen(auth_message, can_login=False)
+    st.stop()
+
+if not st.user.get("is_logged_in", False):
+    _render_login_screen("", can_login=True)
+    st.stop()
+
+google_subject = st.user.get("sub")
+if not isinstance(google_subject, str) or not google_subject.strip():
+    st.error(
+        "Google sign-in did not provide a usable account identifier. "
+        "Please sign out and try again."
+    )
+    if st.button("Sign out", key="invalid_google_identity_logout"):
+        st.logout()
+    st.stop()
+
+authenticated_subject = sha256(
+    f"google:{google_subject}".encode("utf-8")
+).hexdigest()
+if st.session_state.get("_authenticated_subject") != authenticated_subject:
+    st.session_state.clear()
+    st.session_state["_authenticated_subject"] = authenticated_subject
+
+st.session_state["_user_output_directory"] = str(OUTPUT_ROOT / authenticated_subject)
 
 st.markdown(
     """
@@ -2414,6 +2607,15 @@ st.markdown(
 
 st.sidebar.markdown("## 📚 StudySnap AI")
 st.sidebar.caption("Your personal study workspace")
+google_name = st.user.get("name")
+google_email = st.user.get("email")
+st.sidebar.markdown("### Signed in")
+st.sidebar.write(google_name or "Student")
+if google_email:
+    st.sidebar.caption(google_email)
+if st.sidebar.button("Sign out", key="google_logout_button", use_container_width=True):
+    st.logout()
+    st.stop()
 st.sidebar.divider()
 st.sidebar.markdown("### Navigation")
 st.sidebar.markdown(
@@ -3283,8 +3485,9 @@ save_column, text_column, markdown_column, pdf_column = st.columns(4)
 with save_column:
     if st.button("💾 Save notes to output/", width="stretch"):
         try:
-            OUTPUT_DIRECTORY.mkdir(parents=True, exist_ok=True)
-            notes_path = OUTPUT_DIRECTORY / "studysnap_notes.txt"
+            output_directory = _user_output_directory()
+            output_directory.mkdir(parents=True, exist_ok=True)
+            notes_path = output_directory / "studysnap_notes.txt"
             notes_path.write_text(notes_text, encoding="utf-8")
             st.success(f"Notes saved to {notes_path.relative_to(PROJECT_ROOT)}")
         except OSError as error:

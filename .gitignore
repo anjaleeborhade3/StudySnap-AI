@@ -18,6 +18,11 @@ output/
 
 # Streamlit local configuration and secrets
 .streamlit/secrets.toml
+.streamlit/secrets.*.toml
+!.streamlit/secrets.example.toml
+*.pem
+client_secret*.json
+credentials*.json
 
 # Editor and operating-system files
 .vscode/

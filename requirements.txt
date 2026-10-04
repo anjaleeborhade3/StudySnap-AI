@@ -1,4 +1,5 @@
 streamlit
+Authlib
 pandas
 numpy
 pillow
